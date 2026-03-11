@@ -1,0 +1,95 @@
+# ---------------------------
+# Mac system files
+# ---------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+
+
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*$py.class
+
+
+# ---------------------------
+# Python virtual environments
+# ---------------------------
+venv/
+.venv/
+env/
+ENV/
+
+
+# ---------------------------
+# Jupyter
+# ---------------------------
+.ipynb_checkpoints/
+
+
+# ---------------------------
+# Logs
+# ---------------------------
+*.log
+
+
+# ---------------------------
+# Node / React (dashboard)
+# ---------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+
+# ---------------------------
+# Build outputs
+# ---------------------------
+dist/
+build/
+
+
+# ---------------------------
+# Dataset files (large files)
+# ---------------------------
+*.csv
+*.tsv
+*.zip
+*.tar
+*.gz
+
+
+# ---------------------------
+# Large ML artifacts
+# ---------------------------
+*.pkl
+*.joblib
+*.h5
+*.model
+
+
+# ---------------------------
+# IDEs
+# ---------------------------
+.vscode/
+.idea/
+
+
+# ---------------------------
+# Temporary files
+# ---------------------------
+*.tmp
+*.temp
+
+
+# ---------------------------
+# Project-specific large dataset
+# ---------------------------
+NYPD_Complaint_Data_Current_(Year_To_Date)_20260126.csv
+NYPD_Analytics/nypd_clean.csv
+NYPD_Analytics/nypd_transformed.csv
