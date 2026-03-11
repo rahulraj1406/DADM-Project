@@ -1,0 +1,7 @@
+Data Cleaning Report
+====================
+Dropped 0 duplicate rows based on CMPLNT_NUM.
+Dropped 0 rows with critical nulls (OFNS_DESC, CMPLNT_NUM).
+Dropped 2906 rows with out-of-bounds Lat/Long.
+Dropped 0 rows where CMPLNT_FR_DT > RPT_DT.
+Final dataset dimensions: 435650 rows, 36 columns.

@@ -1,0 +1,10 @@
+Highly Correlated Feature Pairs (|r| > 0.7):
+TRANSIT_DISTRICT correlates with: ADDR_PCT_CD
+Latitude correlates with: Y_COORD_CD
+Longitude correlates with: X_COORD_CD
+IS_WEEKEND correlates with: DAY_OF_WEEK
+DAYS_TO_REPORT correlates with: YEAR
+IS_FELONY correlates with: KY_CD
+IS_WEEKEND.1 correlates with: DAY_OF_WEEK, IS_WEEKEND
+
+Cramer's V (BORO_NM vs LAW_CAT_VIO): 0.0508

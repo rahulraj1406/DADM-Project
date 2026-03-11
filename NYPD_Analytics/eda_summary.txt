@@ -1,0 +1,43 @@
+Missing Values:
+TRANSIT_DISTRICT            412298
+HOUSING_PSA                 411370
+CMPLNT_TO_DT                 20328
+PD_CD                          243
+CMPLNT_FR_DT_parsed              5
+CMPLNT_FR_TM                     0
+CMPLNT_TO_TM                     0
+New Georeferenced Column         0
+Lat_Lon                          0
+Longitude                        0
+Latitude                         0
+Y_COORD_CD                       0
+X_COORD_CD                       0
+VIC_SEX                          0
+VIC_RACE                         0
+VIC_AGE_GROUP                    0
+BORO_NM                          0
+SUSP_SEX                         0
+SUSP_RACE                        0
+SUSP_AGE_GROUP                   0
+STATION_NAME                     0
+RPT_DT                           0
+PREM_TYP_DESC                    0
+PD_DESC                          0
+ADDR_PCT_CD                      0
+PATROL_BORO                      0
+PARKS_NM                         0
+OFNS_DESC                        0
+LOC_OF_OCCUR_DESC                0
+LAW_CAT_VIO                      0
+KY_CD                            0
+JURIS_DESC                       0
+JURISDICTION_CODE                0
+CMPLNT_FR_DT                     0
+HADEVELOPT                       0
+CRM_ATPT_CPTD_CD                 0
+CMPLNT_NUM                       0
+
+EDA Summary & Key Observations:
+1. Temporal Patterns: Higher complaint volume likely occurs during specific times of day or months, as shown in plots.
+2. Categorical: Top offenses and boroughs identified.
+3. Outliers Identified: 5871 outlier points flagged based on thresholds.

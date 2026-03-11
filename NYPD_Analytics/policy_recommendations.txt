@@ -1,0 +1,19 @@
+FINDING 1: Crime volume significantly peaks during certain periods, particularly early evening and weekends.
+IMPLICATION: Standard uniform patrol distributions do not optimally align with temporal risk spikes.
+RECOMMENDATION: Shift to dynamic scheduling, staggering shifts to maximize patrol presence between 18:00 and 22:00.
+
+FINDING 2: Property crimes constitute the majority of high-error misclassifications (Task B) in commercial dense areas.
+IMPLICATION: Subtle distinctions between trespassing, shoplifting, and minor larceny blur without contextual patrol knowledge.
+RECOMMENDATION: Train officers in commercial hubs to utilize more granular complaint descriptions to aid in downstream triaging.
+
+FINDING 3: Forecast models flag Precincts 14 and 75 as possessing high volatility (MAPE > 20%) in week-to-week complaints.
+IMPLICATION: Reactive resource planning in these precincts is consistently lagging behind actual ground truth spikes.
+RECOMMENDATION: Establish a mobile reserve unit strictly allocated to handle spillover incidents in anomalous precincts.
+
+FINDING 4: High Crime Precinct features rank extremely high in felony prediction importance (SHAP).
+IMPLICATION: Location is a stronger predictor of crime severity than many demographic or temporal suspect attributes.
+RECOMMENDATION: Concentrate community-based intervention programs geographically rather than purely demographically.
+
+FINDING 5: Null suspect characteristics correlate strongly with delayed reporting ('DAYS_TO_REPORT').
+IMPLICATION: Evidence quality and suspect identification diminish rapidly as case reporting is delayed.
+RECOMMENDATION: Implement community campaigns encouraging immediate 311/911 utilization and digital reporting platforms.

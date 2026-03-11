@@ -1,0 +1,121 @@
+STAGE 1: DATASET OVERVIEW
+- Loaded dataset successfully.
+- Dataset has 438556 rows and 36 columns.
+- Identified 2 columns with >50% nulls.
+- Generated data_dictionary.csv and schema_summary.txt.
+
+STAGE 2: EXPLORATORY DATA ANALYSIS (EDA)
+- Generated temporal, categorical, and bivariate plots in eda_report/.
+- Checked missing values and created a sample heatmap.
+- Encountered 5871 total outlier flags.
+- Wrote outlier_flags.csv and eda_summary.txt.
+
+STAGE 3: DATA CLEANING
+- Deduplicated rows against CMPLNT_NUM.
+- Dropped critical nulls and out-of-bounds coordinates/dates.
+- Filled non-critical nulls mapping unknown values.
+- Enforced datatypes for dates, integer codes, and coordinates.
+- Saved nypd_clean.csv and cleaning_report.txt.
+
+STAGE 4: DATA TRANSFORMATION & FEATURE ENGINEERING
+- Extracted temporal features (HOUR, DAY_OF_WEEK, MONTH, IS_WEEKEND, TIME_OF_DAY).
+- Computed Geographic Features: HIGH_CRIME_PRECINCT and GEO_CLUSTER (KMeans=15).
+- Encoded categoricals (OHE, Frequency, Ordinal).
+- Standard-scaled continuous temporal features.
+- Saved nypd_transformed.csv, scaler.pkl, encoder_mappings.json, feature_list.txt.
+
+STAGE 5: DATA ANALYSIS
+- Computed descriptive stats and exported to analysis_results.xlsx.
+- Computed correlation matrix and saved collinearity_report.txt.
+- Executed H1-H4 Hypothesis tests and saved to hypothesis_tests.csv.
+- Generated html maps in maps/ directory.
+
+STAGE 6: DATA MODELING
+- Subsampled train set and evaluated models for Task A and B.
+- Exported confusion matrices, model metrics.
+- Generated Prophet models for top 5 precincts.
+- Exported model files (pkl).
+
+STAGE 7: RESULTS INTERPRETATION
+- Generated feature importances and SHAP plots.
+- Conducted error analysis on Multi-class model.
+- Generated visual forecast evaluation for the top 5 precincts.
+- Drafted policy recommendations based on findings.
+
+STAGE 8: PRESENTATION OF FINDINGS
+- Generated 12 presentation slides as PNGs in presentation/.
+- Drafted dashboard_spec.md for Plotly Dash UI design.
+
+STAGE 9: DOCUMENTATION
+- Generated requirements.txt and README.md.
+- Wrote final_report.pdf with executive summaries.
+- Initialized Git repo and processed staged commits/tags up to v9.
+
+STAGE 9: DOCUMENTATION
+- Generated requirements.txt and README.md.
+- Wrote final_report.pdf with executive summaries.
+- Initialized Git repo and processed staged commits/tags up to v9.
+
+STAGE 10: FUTURE WORK & FAIRNESS AUDIT
+- Generated future_work_roadmap.md detailing advanced modeling, deployment, and data integrations.
+- Executed basic Fairness Audit on False Positive Rates by race.
+- Exported fairness_audit_report.md.
+PIPELINE COMPLETE.
+STAGE 1: DATASET OVERVIEW
+- Loaded dataset successfully.
+- Dataset has 438556 rows and 36 columns.
+- Identified 2 columns with >50% nulls.
+- Generated data_dictionary.csv and schema_summary.txt.
+
+STAGE 2: EXPLORATORY DATA ANALYSIS (EDA)
+- Generated temporal, categorical, and bivariate plots in eda_report/.
+- Checked missing values and created a sample heatmap.
+- Encountered 5871 total outlier flags.
+- Wrote outlier_flags.csv and eda_summary.txt.
+
+STAGE 3: DATA CLEANING
+- Deduplicated rows against CMPLNT_NUM.
+- Dropped critical nulls and out-of-bounds coordinates/dates.
+- Filled non-critical nulls mapping unknown values.
+- Enforced datatypes for dates, integer codes, and coordinates.
+- Saved nypd_clean.csv and cleaning_report.txt.
+
+STAGE 4: DATA TRANSFORMATION & FEATURE ENGINEERING
+- Extracted temporal features (HOUR, DAY_OF_WEEK, MONTH, IS_WEEKEND, TIME_OF_DAY).
+- Computed Geographic Features: HIGH_CRIME_PRECINCT and GEO_CLUSTER (KMeans=15).
+- Encoded categoricals (OHE, Frequency, Ordinal).
+- Standard-scaled continuous temporal features.
+- Saved nypd_transformed.csv, scaler.pkl, encoder_mappings.json, feature_list.txt.
+
+STAGE 5: DATA ANALYSIS
+- Computed descriptive stats and exported to analysis_results.xlsx.
+- Computed correlation matrix and saved collinearity_report.txt.
+- Executed H1-H4 Hypothesis tests and saved to hypothesis_tests.csv.
+- Generated html maps in maps/ directory.
+
+STAGE 6: DATA MODELING
+- Subsampled train set and evaluated models for Task A and B.
+- Exported confusion matrices, model metrics.
+- Generated Prophet models for top 5 precincts.
+- Exported model files (pkl).
+
+STAGE 7: RESULTS INTERPRETATION
+- Generated feature importances and SHAP plots.
+- Conducted error analysis on Multi-class model.
+- Generated visual forecast evaluation for the top 5 precincts.
+- Drafted policy recommendations based on findings.
+
+STAGE 8: PRESENTATION OF FINDINGS
+- Generated 12 presentation slides as PNGs in presentation/.
+- Drafted dashboard_spec.md for Plotly Dash UI design.
+
+STAGE 9: DOCUMENTATION
+- Generated requirements.txt and README.md.
+- Wrote final_report.pdf with executive summaries.
+- Initialized Git repo and processed staged commits/tags up to v9.
+
+STAGE 10: FUTURE WORK & FAIRNESS AUDIT
+- Generated future_work_roadmap.md detailing advanced modeling, deployment, and data integrations.
+- Executed basic Fairness Audit on False Positive Rates by race.
+- Exported fairness_audit_report.md.
+PIPELINE COMPLETE.

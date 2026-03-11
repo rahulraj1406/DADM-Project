@@ -1,0 +1,9 @@
+Schema Summary
+==============
+Row count: 438556
+Column count: 36
+Memory usage: 772.96 MB
+
+Key Observations:
+- 2 columns have >50% missing values: HOUSING_PSA, TRANSIT_DISTRICT
+- Dataset loaded successfully.
