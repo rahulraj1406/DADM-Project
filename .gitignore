@@ -1,3 +1,4 @@
 *.csv
 NYPD_Analytics/venv/lib/python3.9/site-packages/llvmlite/binding/libllvmlite.dylib
 NYPD_Analytics/.git/objects/pack/pack-346985b3a0e9fc5cd9c954a94bad7aea1a9cecd5.pack
+.venv/

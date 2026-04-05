@@ -1,0 +1,6 @@
+STAGE 1: DATASET OVERVIEW
+- Loaded dataset successfully.
+- Dataset has 438556 rows and 36 columns.
+- Identified 2 columns with >50% nulls.
+- Generated data_dictionary.csv and schema_summary.txt.
+
