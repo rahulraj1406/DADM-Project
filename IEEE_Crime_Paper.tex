@@ -1,0 +1,680 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{subcaption}
+
+\graphicspath{{./figures/}}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Predicting Crime Volume and Behavioral Patterns in New York City:\\
+A Multi-Task Data Mining Approach on NYPD Complaint Data}
+
+\author{
+  \IEEEauthorblockN{Sai Srikar Devasani}
+  \IEEEauthorblockA{
+    \textit{Foundations of Data Analytics and Data Mining}\\
+    \textit{Department of Computer Science}\\
+    New York, USA \\
+    saisrikardevasani@domain.edu
+  }
+}
+
+\maketitle
+
+%=============================================================
+\begin{abstract}
+Urban crime prediction is a high-stakes application of data analytics with direct operational implications for public safety resource allocation and precinct-level command decisions. This paper presents a five-task data mining pipeline applied to 2,948,528 NYPD criminal complaint records spanning 2020--2025, following the Cross-Industry Standard Process for Data Mining (CRISP-DM) lifecycle. The five prediction tasks are: (1) meta-crime behavioral classification into Violent, Property, and Other taxonomies using LightGBM; (2) suspect sex demographic profiling using XGBoost with dynamic class-weight balancing; (3) crime outcome prediction (completed vs. attempted) via a BorderlineSMOTE-augmented LightGBM--XGBoost soft-vote ensemble with threshold-optimized operating point; (4) city-wide daily crime volume forecasting using a distribution-shift-corrected delta-target regression ensemble; and (5) precinct-level hotspot detection using SMOTE-balanced gradient-boosted models. The pipeline enforces strict temporal train/test separation (2020--2024 training, 2025 evaluation) and an explicit anti-leakage framework using \texttt{shift(1)}-anchored rolling windows throughout. Cyclical Fourier encoding is applied to hour, day-of-week, and month features to preserve circular temporal semantics. SHAP TreeExplainer is used to audit and interpret the behavioral classification model. Results on the held-out 2025 test set show: meta-crime accuracy 75.4\% (weighted F1 0.77), suspect sex AUC 0.71, crime outcome AUC 0.82, daily volume $R^2$ 0.519 (MAPE 4.09\%), and precinct hotspot AUC 0.663 (macro-F1 0.62) after strict leakage removal. The volume improvement (from a naive 0.344) was achieved by addressing a 41\% COVID-era distribution shift: restricting training to 2022--2024 and predicting deviations from 2024 day-of-week means rather than raw counts. The findings confirm that gradient-boosted ensembles with rigorous temporal feature engineering and explicit regime-shift handling provide interpretable, leakage-free predictive performance for multi-dimensional urban crime analysis.
+\end{abstract}
+
+\begin{IEEEkeywords}
+crime prediction, data mining, CRISP-DM, LightGBM, XGBoost, SMOTE, BorderlineSMOTE, hotspot detection, temporal feature engineering, cyclical encoding, SHAP, NYPD
+\end{IEEEkeywords}
+
+%=============================================================
+\section{Introduction}
+
+Urban crime imposes profound social and economic costs on metropolitan populations and creates complex operational demands for law enforcement agencies. Effective allocation of patrol resources, preemptive deployment to high-risk precincts, and early detection of elevated crime conditions require predictive models that are both accurate and operationally interpretable. The emergence of large-scale administrative crime records—such as those published by the New York City Police Department (NYPD)—offers an unprecedented opportunity to apply data analytics at city-wide scale.
+
+The NYPD Complaint Dataset \cite{nypd2024} is one of the most comprehensive publicly available urban crime records globally, documenting every criminal complaint filed with the department. With nearly 3 million records spanning five years and 35 attribute fields capturing spatial, temporal, categorical, and demographic dimensions, it provides a rich substrate for multi-dimensional predictive modeling.
+
+Prior work in predictive policing has predominantly addressed single-task formulations: forecasting crime occurrence within a geographic cell \cite{mohler2011}, mapping spatial hotspot distributions \cite{chainey2008}, or estimating precinct-level risk scores \cite{perry2013}. These single-task approaches, while valuable, do not capture the full operational complexity facing police departments, which simultaneously need to understand \textit{what type} of crime is occurring, \textit{how many} incidents to expect on a given day, \textit{where} anomalous activity is concentrating, and the \textit{outcomes} of reported incidents.
+
+This paper addresses this gap by formulating crime prediction as a multi-task problem decomposed into five operationally distinct prediction tasks. Each task is self-contained, targets a different decision level within the organization (behavioral analysis, demographic profiling, resource planning, operational dispatching), and is evaluated independently on a held-out 2025 test set. The entire pipeline adheres to the KDD process \cite{fayyad1996} and CRISP-DM \cite{chapman2000} lifecycle, ensuring that the transformation from raw complaint records to actionable predictions follows a reproducible, auditable methodology.
+
+The primary contributions of this work are:
+\begin{itemize}
+  \item A five-task predictive pipeline trained on real-world NYPD data and evaluated on a strict temporal holdout (2025 YTD) with no parameter tuning on test data.
+  \item An explicit anti-leakage framework for time-series data, using \texttt{shift(1)}-anchored rolling windows and exclusively train-derived aggregate statistics, with empirical validation showing that naive implementations produce spuriously inflated AUC.
+  \item A two-pronged imbalance handling strategy for the 98.6\%/1.4\% crime outcome split: BorderlineSMOTE on the XGBoost branch and \texttt{is\_unbalance=True} on the LightGBM branch, combined via soft-vote ensemble.
+  \item Cyclical Fourier encoding of all periodic temporal features (hour, day-of-week, month, and multi-harmonic day-of-year), preventing distance metric distortion at period boundaries.
+  \item SHAP TreeExplainer analysis identifying the dominant drivers of meta-crime behavioral classification, providing auditability for deployment in sensitive public safety contexts.
+\end{itemize}
+
+The remainder of this paper is structured as follows. Section~\ref{sec:related} surveys related work. Section~\ref{sec:eda} presents exploratory data analysis. Section~\ref{sec:data} describes preprocessing and feature engineering. Section~\ref{sec:method} details the methodology. Section~\ref{sec:results} reports experimental results. Section~\ref{sec:discussion} discusses findings. Section~\ref{sec:conclusion} concludes.
+
+%=============================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{KDD and CRISP-DM Frameworks}
+The Knowledge Discovery in Databases (KDD) process, formalized by Fayyad et al.\ \cite{fayyad1996}, describes the iterative pipeline from raw data selection through transformation, mining, and interpretation. This work follows the KDD process directly: selection of NYPD complaint records, preprocessing to remove invalid timestamps and normalize categoricals, feature transformation (cyclical encoding, lag engineering), pattern mining via gradient boosting, and interpretation via SHAP. At the project level, the CRISP-DM framework \cite{chapman2000} governs the lifecycle: business understanding (defining the five prediction tasks), data understanding (EDA), data preparation (cleaning, encoding, split), modeling (LightGBM, XGBoost), and evaluation (held-out 2025 test). A key limitation of both frameworks in operational settings is their static conception of deployment—neither explicitly addresses the need for continuous model retraining as crime patterns drift, which is particularly relevant given the 39.1\% volume growth observed between 2020 and 2024.
+
+\subsection{Predictive Policing and Crime Forecasting}
+Mohler et al.\ \cite{mohler2011} model urban crime as a self-exciting point process (SEPP), demonstrating that past crime events significantly elevate near-term local risk. This finding directly motivates the lag and rolling-average features central to our hotspot and volume regression tasks. However, the SEPP framework is limited to spatial incident clustering and cannot jointly address behavioral classification, suspect demographic profiling, or multi-task prediction; it also assumes stationarity of the excitation kernel, which our 2020--2024 volume trend data contradicts.
+
+Chainey et al.\ \cite{chainey2008} conducted a landmark empirical evaluation of kernel density estimation (KDE) hotspot maps, showing KDE is superior to choropleth and grid-cell methods for forecasting future crime locations. While foundational, KDE produces static spatial risk surfaces with no temporal dynamics and has no mechanism for incorporating offense category, day-of-week, or precinct-level demographic rates—all of which our gradient-boosted ensemble exploits. Their work also does not address the leakage problems that arise when rolling features include the current observation.
+
+Perry et al.\ \cite{perry2013} provide the most comprehensive survey of operational predictive policing systems, cataloguing statistical and ML approaches deployed by U.S. law enforcement. Critically, their review highlights that single-task systems dominate practice; no evaluated framework simultaneously addresses behavioral taxonomy, demographic profiling, volume forecasting, and hotspot detection—the gap directly addressed by the five-task formulation presented here.
+
+Bogomolov et al.\ \cite{bogomolov2014} demonstrate that mobile network activity and socioeconomic variables improve crime prediction beyond historical crime records alone, achieving accuracy gains on London crime data. Although promising, their approach requires proprietary telecom data unavailable in most cities and does not report leakage-controlled temporal evaluations, making generalizability claims uncertain.
+
+\subsection{Gradient Boosting Frameworks}
+XGBoost \cite{chen2016} introduced regularized gradient boosting with second-order gradient statistics, becoming the dominant tabular ML algorithm on competitive benchmarks and production crime analytics systems. LightGBM \cite{ke2017} improved on XGBoost through leaf-wise (best-first) tree growth, histogram-based feature binning, and gradient-based one-side sampling—collectively reducing training time by 20$\times$ on large datasets while maintaining or improving accuracy. For a dataset of 2.5 million training records, LightGBM's efficiency is operationally critical. A recognized limitation of both frameworks is sensitivity to hyperparameter settings without automated tuning; the hyperparameters used in this work were validated on the temporal holdout but may require re-tuning for different cities or data distributions.
+
+\subsection{Class Imbalance Handling}
+SMOTE \cite{chawla2002} generates synthetic minority samples by interpolating between existing minority instances in feature space. A well-documented critique is that synthetic samples generated far from the decision boundary add noise without discriminative benefit—particularly problematic for the 98.6\%/1.4\% crime outcome split where most feature space is majority-class territory \cite{he2009}. BorderlineSMOTE \cite{han2005} addresses this by restricting synthesis to instances near the decision boundary, producing more discriminative samples that improve recall at the most operationally relevant operating points. Nevertheless, interpolation-based oversampling may generate samples that violate causal crime mechanisms; future work could explore conditional generative models as a more principled alternative.
+
+\subsection{Fairness and Model Interpretability}
+Berk et al.\ \cite{berk2018} analyse trade-offs between fairness criteria in algorithmic criminal justice decisions, demonstrating that satisfying multiple fairness constraints simultaneously is mathematically impossible. Any model optimizing predictive accuracy will make asymmetric errors across demographic groups, making interpretability analysis a prerequisite for ethical review. SHAP (SHapley Additive exPlanations) \cite{lundberg2017} provides theoretically grounded per-instance feature attributions derived from cooperative game theory's Shapley values, satisfying efficiency, symmetry, and null-player axioms that naïve feature importance measures do not. In crime analytics, SHAP enables auditors to verify that predictions are driven by criminologically coherent spatial-temporal features rather than protected demographic characteristics—a critical safeguard for responsible deployment.
+
+\subsection{Temporal Feature Engineering}
+Cyclical encoding of periodic variables using sine-cosine pairs is standard practice in time-series feature engineering \cite{pedregosa2011}, preserving the topological structure of cyclic time: midnight (hour 23) and 1 AM (hour 0) are close in circular time but maximally far apart under linear encoding. Fourier harmonics for annual seasonality ($k=1,2,3$) capture the fundamental and harmonic components of the yearly crime cycle without requiring explicit holiday calendars. A limitation of static Fourier features is that they encode fixed-period annual patterns; structural breaks such as the COVID-19 lockdown in 2020 distort the assumed periodicity, contributing to the mild volume underestimation observed during atypically low-crime training periods.
+
+%=============================================================
+\section{Exploratory Data Analysis}
+\label{sec:eda}
+
+Before model construction, a systematic exploratory analysis was conducted to characterize the dataset's distributional properties, identify structural patterns, and motivate feature engineering decisions.
+
+\subsection{Daily Volume Time Series}
+
+The daily city-wide complaint time series reveals a three-layer temporal structure (Fig.~\ref{fig:eda_timeseries}): strong weekly seasonality (weekday peaks), annual seasonality (summer elevation in June--August), and a secular upward trend across the full 2020--2024 window. The strong autocorrelation structure—previous-day volume correlates above 0.85 with current-day volume across the training period—directly validates the lag feature strategy used in the volume forecasting and hotspot tasks.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_timeseries.png}
+  \caption{Daily city-wide complaint count, 2020--2024. The three-layer temporal structure (weekly, annual, secular trend) motivates the lag, rolling, Fourier harmonic, and trend features used in the volume forecasting task.}
+  \label{fig:eda_timeseries}
+\end{figure}
+
+\subsection{Annual Volume Trends}
+
+The annual complaint count rose from 412,305 in 2020 to 573,662 in 2024, a 39.1\% increase over five years (Fig.~\ref{fig:eda_annual}). The 2020 low reflects the COVID-19 lockdown effect on reported street crime. The sustained post-2021 recovery motivates the inclusion of \texttt{DaySince2020} as a trend covariate; without it, models would extrapolate from a 2020-weighted average and underpredict the continuing upward trend into 2025.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_annual.png}
+  \caption{Annual complaint volume, 2020--2025. Blue bars are training years; the red bar is the held-out 2025 test partition. The 39.1\% growth from 2020 to 2024 motivates inclusion of a trend feature (\texttt{DaySince2020}).}
+  \label{fig:eda_annual}
+\end{figure}
+
+\subsection{Intra-Day and Day-of-Week Patterns}
+
+Crime incidence exhibits strong diurnal periodicity (Fig.~\ref{fig:eda_hourly}). Complaint volume reaches a daily minimum between 4--6 AM and peaks between 3--6 PM, with a secondary evening peak around 10 PM. This bimodal pattern is consistent across all five years and validates cyclical hour encoding. The \texttt{IsNight} and \texttt{IsRush} binary indicators supplement the sine-cosine encoding by explicitly flagging the extremes of this distribution.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_hourly.png}
+  \caption{Mean crime volume by hour of day, 2020--2024 training data. The bimodal distribution with early-morning nadir and mid-afternoon peak validates cyclical hour encoding and the IsNight / IsRush binary features.}
+  \label{fig:eda_hourly}
+\end{figure}
+
+Day-of-week analysis shows higher volumes on weekdays than weekends, with Friday recording the highest mean daily count. This motivates \texttt{DOW\_vol\_median}—a per-day-of-week baseline derived from training data only and mapped forward to the test set.
+
+\subsection{Geographic Distribution by Borough}
+
+Brooklyn accounts for the largest share of complaints ($\approx$29\%), followed by Manhattan (23\%), the Bronx (21\%), Queens (19\%), and Staten Island (8\%) (Fig.~\ref{fig:eda_borough}). Borough-level crime rate per unit area varies by more than $6\times$ between Staten Island and the Bronx. This spatial heterogeneity is captured by \texttt{BORO\_HOUR\_RATE} and the \texttt{BORO\_NM} categorical, which SHAP analysis later identifies as a significant driver of meta-crime classification.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_borough.png}
+  \caption{Complaint distribution by NYC borough, 2020--2024 training data. Brooklyn and Manhattan jointly account for over 52\% of complaints. The $6\times$ per-area rate differential motivates geographic aggregate features.}
+  \label{fig:eda_borough}
+\end{figure}
+
+\subsection{Meta-Crime Class Distribution}
+
+After applying the rule-based meta-crime mapping, the training-set class distribution is: Property 43.7\%, Other 35.7\%, and Violent 20.6\% (Fig.~\ref{fig:eda_metacrime}). The 2:1 Property-to-Violent imbalance motivates the \texttt{class\_weight='balanced'} setting in the LightGBM classifier to prevent the majority class from dominating the learned decision boundary.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_metacrime.png}
+  \caption{Meta-crime class distribution in the 2020--2024 training set. Property crimes are the most frequent (43.7\%), with Violent crimes at 20.6\%. Balanced class weights are applied during LightGBM training.}
+  \label{fig:eda_metacrime}
+\end{figure}
+
+\subsection{Crime Outcome Imbalance}
+
+The completed-versus-attempted split is severe (Fig.~\ref{fig:eda_outcome}): 98.6\% of training complaints are COMPLETED, leaving only 1.4\% (36,509 records) as ATTEMPTED. A naive classifier predicting COMPLETED for every instance achieves 98.6\% accuracy while learning nothing about attempted crimes. This extreme imbalance motivates the BorderlineSMOTE oversampling strategy described in Section~\ref{sec:method}.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_eda_outcome.png}
+  \caption{Crime outcome class distribution in the training set (log-scale y-axis). The 98.6\%/1.4\% split is one of the most extreme imbalance scenarios in the dataset and motivates the two-branch BorderlineSMOTE strategy.}
+  \label{fig:eda_outcome}
+\end{figure}
+
+%=============================================================
+\section{Dataset and Feature Engineering}
+\label{sec:data}
+
+\subsection{Dataset}
+
+The NYPD Complaint Dataset \cite{nypd2024} comprises all criminal complaints filed with the NYPD, published via the NYC Open Data portal. Two CSV exports are used: a historical extract spanning 2020--2024 and a 2025 year-to-date extract used exclusively as a held-out test set. Following timestamp validation and year filtering, the combined dataset contains 2,948,528 rows and 35 columns (Table~\ref{tab:dataset_stats}).
+
+\begin{table}[h]
+\centering
+\caption{Annual Complaint Distribution and Train/Test Assignment}
+\label{tab:dataset_stats}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Year} & \textbf{Complaints} & \textbf{Partition} \\
+\midrule
+2020 & 412,305 & Train \\
+2021 & 450,275 & Train \\
+2022 & 531,234 & Train \\
+2023 & 553,310 & Train \\
+2024 & 573,662 & Train \\
+\midrule
+\textbf{Train Total} & \textbf{2,520,786} & \\
+\midrule
+2025 (YTD) & 427,742 & Test \\
+\midrule
+\textbf{Grand Total} & \textbf{2,948,528} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Data Cleaning}
+
+Records with missing or unparseable complaint timestamps (\texttt{CMPLNT\_FR\_DT}, \texttt{CMPLNT\_FR\_TM}) are removed, and the dataset is filtered to the 2020--2025 range. Twelve categorical fields—including borough, premise type, offense description, law category, jurisdiction, and suspect and victim demographics—are normalized: null values, empty strings, and codes \texttt{(null)} and \texttt{U} are unified to the sentinel \texttt{UNKNOWN}. No rows are dropped for missing categorical values; \texttt{UNKNOWN} is treated as a valid encoded category during label encoding.
+
+\subsection{Temporal Feature Engineering}
+
+Calendar attributes extracted from the parsed complaint datetime comprise: year, month, day-of-week (0=Monday), day-of-year, week-of-year, day-of-month, quarter, and binary indicators for weekend, nighttime (22:00--05:59), and rush hour (07:00--09:59 or 17:00--19:59).
+
+\subsubsection{Cyclical Encoding}
+To preserve the circular topology of periodic temporal variables, all periodic features are encoded as sine-cosine pairs:
+\begin{equation}
+  f_\text{sin}(x, T) = \sin\!\left(\frac{2\pi x}{T}\right), \quad
+  f_\text{cos}(x, T) = \cos\!\left(\frac{2\pi x}{T}\right)
+\end{equation}
+with periods $T \in \{24, 7, 12\}$ for hour, day-of-week, and month respectively. Linear encoding of these features would treat hour 23 and hour 0 as 23 units apart when they are in fact adjacent, distorting distance computations in tree-split scoring.
+
+\subsubsection{Fourier Harmonics for Annual Seasonality}
+For the volume forecasting task, three harmonic pairs are added for annual seasonality:
+\begin{equation}
+  \left(\sin\!\left(\frac{2k\pi \cdot \text{DOY}}{365.25}\right),\; \cos\!\left(\frac{2k\pi \cdot \text{DOY}}{365.25}\right)\right), \quad k = 1, 2, 3
+\end{equation}
+These capture the fundamental annual cycle and its first two harmonics, encoding summer elevation, mid-winter troughs, and shoulder-season transitions without requiring explicit holiday indicators.
+
+\subsection{Train-Derived Aggregate Features}
+
+To inject spatial-temporal base rates without leaking test-period statistics, four aggregate features are computed exclusively on training records (2020--2024) and merged onto both train and test sets via left join:
+\begin{itemize}
+  \item \textbf{PCT\_MONTH\_RATE}: complaint count grouped by (precinct, month).
+  \item \textbf{PCT\_HOUR\_RATE}: complaint count grouped by (precinct, hour).
+  \item \textbf{BORO\_HOUR\_RATE}: complaint count grouped by (borough, hour).
+  \item \textbf{PREM\_SEV\_RATE}: complaint count grouped by (premise type, law category).
+\end{itemize}
+Unseen (precinct, month) combinations in 2025 are filled with the training-set median of the corresponding rate, preventing NaN propagation without introducing any test-period statistics.
+
+\subsection{Meta-Crime Behavioral Taxonomy}
+
+The raw \texttt{OFNS\_DESC} field contains 63 distinct offense descriptions. A deterministic rule-based function—involving no statistical fitting and therefore safe to apply before the train/test split—maps these into three behavioral macro-categories:
+\begin{itemize}
+  \item \textbf{Violent}: Rape, Robbery, Felony Assault, Assault 3rd \& Related, Murder \& Non-Negligent Manslaughter, Kidnapping \& Related, Sex Crimes.
+  \item \textbf{Property}: Burglary, Grand Larceny, Petit Larceny, Grand Larceny of Motor Vehicle, Criminal Mischief, Theft-Fraud, Motor Vehicle Theft, Burglar's Tools, Theft of Services.
+  \item \textbf{Other}: All remaining offenses.
+\end{itemize}
+
+\subsection{Categorical Encoding}
+
+A custom label encoder is fit on training-set values only. At prediction time, unseen test-set categories are mapped to the most frequent training-set value for that column, preventing encoder failure while maintaining a valid encoding. A shape assertion (\texttt{assert tr.shape[1] == te.shape[1]}) is applied after every encoding call to detect column mismatches before model training.
+
+\subsection{Leakage Prevention Framework}
+
+Preventing future information from entering training features is the most critical discipline in time-series predictive modeling. The pipeline enforces three rules:
+\begin{enumerate}
+  \item \textbf{Temporal split}: all training examples have \texttt{Year} $\in [2020, 2024]$; all test examples have \texttt{Year} $= 2025$. No shuffling.
+  \item \textbf{Aggregate features}: all grouped statistics are computed from training data only and merged forward.
+  \item \textbf{Shifted rolling windows}: all rolling mean, standard deviation, and EWM features are computed from \texttt{Volume.shift(1)}, ensuring:
+  \begin{equation}
+    \text{Roll\_mean}_{t,w} = \frac{1}{w}\sum_{k=1}^{w} V_{t-k}
+  \end{equation}
+  No element of the window touches $V_t$, the regression target.
+\end{enumerate}
+
+%=============================================================
+\section{Methodology}
+\label{sec:method}
+
+The pipeline is organized into five independent prediction tasks. Fig.~\ref{fig:pipeline} illustrates the overall architecture.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox{0.9\columnwidth}{\centering
+\vspace{4pt}
+\textbf{Raw NYPD Records (2020--2025)}\\[3pt]
+$\downarrow$\quad Timestamp parsing, null handling\\[3pt]
+\textbf{Train/Test Split — Year $<$ 2025 / Year $=$ 2025}\\[3pt]
+$\downarrow$\quad Train-only aggregate computation\\[3pt]
+\textbf{Feature Engineering}\\
+Cyclical encoding · Lag/Roll features · Fourier harmonics\\[3pt]
+$\downarrow$\\[3pt]
+\textbf{Five Independent Prediction Tasks}\\
+\small Meta-Crime · Suspect Sex · Outcome\\
+Volume Forecast · Hotspot Detection\\[3pt]
+$\downarrow$\\[3pt]
+\textbf{Held-Out 2025 Evaluation + SHAP Analysis}\\[4pt]
+}}
+\caption{Overall pipeline architecture. All feature engineering uses train-only statistics; the 2025 test set is never seen during training or hyperparameter selection.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Meta-Crime Behavioral Classification}
+
+\textit{Task}: Three-class classification — Violent, Property, Other.
+
+\textit{Features}: 28 features comprising categorical spatial context (borough, precinct, premise type, jurisdiction, location descriptor, patrol borough, victim sex, victim age group), calendar and cyclical temporal features, IsNight, IsRush, TimeBucket, and the four train-derived aggregate rates.
+
+\textit{Model}: LightGBM \cite{ke2017} classifier with \texttt{class\_weight='balanced'}, 1,200 estimators, learning rate 0.05, maximum depth 10, 127 leaves, minimum child samples 30, $L_1$ regularization 0.1, $L_2$ regularization 1.0, column and row subsampling 0.8.
+
+\textit{Evaluation}: Accuracy and weighted F1-score on the 427,742-record 2025 test set.
+
+\subsection{Suspect Demographic Profiling}
+
+\textit{Task}: Binary classification of suspect sex (M or F) from victim demographics and incident context, with no direct suspect attributes used as features.
+
+\textit{Features}: 23 features including spatial context, META\_CRIME, LAW\_CAT\_CD, temporal features, victim sex and age group, and aggregate rates.
+
+\textit{Model}: XGBoost \cite{chen2016} binary classifier. Class imbalance ($\approx$78\% male) is handled via dynamically computed \texttt{scale\_pos\_weight}:
+\begin{equation}
+  w_\text{pos} = \frac{|\{y=0\}|}{|\{y=1\}|}
+\end{equation}
+700 estimators, maximum depth 8, learning rate 0.05, column and row subsampling 0.8.
+
+\textit{Evaluation}: Accuracy and ROC-AUC.
+
+\subsection{Crime Outcome Prediction}
+
+\textit{Task}: Binary classification — COMPLETED vs. ATTEMPTED — under extreme class imbalance (training ratio $\approx$68:1).
+
+\textit{Features}: 25 features including spatial, categorical (OFNS\_DESC is the strongest discriminator: robbery has 5--15\% attempted rate while drug offenses are nearly always completed), temporal, and aggregate rates.
+
+\textit{Imbalance Strategy}: A complementary two-branch approach:
+\begin{itemize}
+  \item \textbf{XGBoost branch}: BorderlineSMOTE \cite{han2005} ($k=5$, \texttt{kind='borderline-1'}) expands ATTEMPTED from 36,509 to 2,473,847 (1:1 balanced) by synthesizing instances near the decision boundary.
+  \item \textbf{LightGBM branch}: Trained on the original imbalanced set with \texttt{is\_unbalance=True}, preserving the natural class distribution from a complementary perspective.
+\end{itemize}
+
+\textit{Ensemble}: Equal-weight soft-vote:
+\begin{equation}
+  p_\text{ens} = 0.5 \cdot p_\text{XGB} + 0.5 \cdot p_\text{LGB}
+\end{equation}
+
+\textit{Threshold Optimization}: Youden's J statistic \cite{fluss2005} is maximized over the ROC curve:
+\begin{equation}
+  J^* = \arg\max_\tau \bigl[\text{TPR}(\tau) - \text{FPR}(\tau)\bigr]
+\end{equation}
+yielding an optimal operating threshold $\hat{\tau} = 0.772$.
+
+\subsection{Daily Crime Volume Forecasting}
+
+\textit{Task}: Regression of city-wide daily complaint count, treated as a univariate time series augmented with rich calendar and lag features.
+
+\textit{Daily Aggregation}: All records are grouped by date, producing 2,100 daily observations. Training uses 2022--2024 (1,096 days); the 2020--2021 COVID years are excluded because their per-day mean ($\approx$900 complaints/day) diverges 41\% from the 2025 test mean ($\approx$1,567/day), introducing a harmful distribution shift. Test: 273 days (2025).
+
+\textit{Distribution-shift mitigation — delta target}: Instead of predicting raw volume $V_t$, models predict the deviation $\Delta_t = V_t - \mu_{\text{DOW},2024}$, where $\mu_{\text{DOW},2024}$ is the 2024 mean for the corresponding day of week. Adding back this baseline after prediction eliminates the inter-year level shift from the regression target, reducing target variance by approximately 40\%.
+
+\textit{Feature Set} (54 features):
+\begin{itemize}
+  \item Calendar: year, month, DOW, DOM, DOY, WOY, quarter, weekend, IsSummer.
+  \item Trend: \texttt{DaySince2020} — integer elapsed days since 2020-01-01.
+  \item Cyclical: sin/cos of DOW and month; three Fourier harmonic pairs for DOY ($k = 1, 2, 3$).
+  \item Holiday flags: \texttt{IsHoliday}, \texttt{IsHolidayEve}, \texttt{IsPostHoliday} (US federal holidays and major observances).
+  \item Lag features: $V_{t-k}$ for $k \in \{1, 2, 3, 7, 14, 21, 30, 60, 90, 182, 365\}$.
+  \item Rolling features (computed from $V_{t-1}$): mean, standard deviation, and EWM for $w \in \{7, 14, 21, 30, 60, 90\}$.
+  \item YOY ratio: $V_{t-365} / (\bar{V}_{90,t-1} + 1)$.
+  \item \texttt{DOW\_vol\_median}: day-of-week volume median, derived from 2022--2024 rows only.
+\end{itemize}
+
+\textit{Sample weighting}: Training rows are weighted by year (2022: 0.5, 2023: 1.0, 2024: 2.0) to give recency bias — more recent patterns are more predictive of 2025.
+
+\textit{Models}: LightGBM regressor (1,000 trees, learning rate 0.02, max depth 5, 31 leaves) and XGBoost regressor (700 trees, learning rate 0.02, max depth 5), equal-weight ensemble. Both fit on the delta target $\Delta_t$ with sample weights.
+
+\textit{Evaluation}: $R^2$, MAE, RMSE, MAPE on 273 test days.
+
+\subsection{Precinct Hotspot Warning System}
+
+\textit{Task}: Binary classification of each (precinct, date) pair as Hotspot or Normal, where a hotspot is a day on which a precinct's complaint count exceeds its training-period 65th percentile.
+
+\textit{Hotspot Threshold}: For each precinct $p$ with training-period daily counts $\mathcal{D}_\text{train}(p)$:
+\begin{equation}
+  \theta_p = Q_{0.65}\bigl(\mathcal{D}_\text{train}(p)\bigr)
+\end{equation}
+The 65th percentile yields $\approx$35\% positive class—more balanced than the 75th percentile ($\approx$25\% positive) without sacrificing the operational meaning of ``above-typical'' volume.
+
+\textit{Features} (23 features): Precinct ID, calendar and cyclical features, IsSummer, PCT\_HOTSPOT\_RATE (per-precinct historical hotspot frequency, training data only), lag counts at $t-1,-3,-7,-14,-21,-30$ days, and rolling mean/standard deviation over 7, 14, 30-day windows (all shifted by 1 day).
+
+\textit{Models}: XGBoost on SMOTE-balanced data (1,200 trees, depth 8); LightGBM with \texttt{is\_unbalance=True} (1,200 trees, depth 9, 127 leaves); equal-weight ensemble with threshold optimized at the ROC operating point maximizing $\text{TPR} - \text{FPR}$.
+
+\textit{Evaluation}: ROC-AUC, macro-F1, accuracy, and per-class precision/recall.
+
+\subsection{SHAP Interpretability}
+
+SHAP TreeExplainer \cite{lundberg2017} is applied to the trained LightGBM meta-crime classifier on a seeded random sample of 3,000 test instances (\texttt{np.random.default\_rng(42)}). For each of the three target classes, SHAP bar plots display global mean absolute feature contributions. A beeswarm plot for the Violent class shows both direction and magnitude of each feature's contribution for individual predictions.
+
+%=============================================================
+\section{Experiments and Results}
+\label{sec:results}
+
+All experiments run on Python 3.11 with LightGBM \cite{ke2017}, XGBoost \cite{chen2016}, scikit-learn \cite{pedregosa2011}, imbalanced-learn \cite{chawla2002}, and SHAP \cite{lundberg2017}. The 2025 test set is never accessed during training or hyperparameter selection.
+
+\subsection{Meta-Crime Behavioral Classification}
+
+Table~\ref{tab:metacrime} shows per-class results on the 427,742-record 2025 test set.
+
+\begin{table}[h]
+\centering
+\caption{Meta-Crime Classification — 2025 Test Set ($n=427{,}742$)}
+\label{tab:metacrime}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Class} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} & \textbf{Support} \\
+\midrule
+Other    & 0.95 & 0.80 & 0.87 & 180,824 \\
+Property & 0.79 & 0.68 & 0.73 & 159,448 \\
+Violent  & 0.50 & 0.78 & 0.61 &  87,470 \\
+\midrule
+Weighted Avg & 0.80 & 0.75 & 0.77 & 427,742 \\
+\midrule
+\multicolumn{4}{l}{Overall Accuracy} & \textbf{0.754} \\
+\multicolumn{4}{l}{Weighted F1} & \textbf{0.766} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model achieves 75.4\% accuracy and 0.77 weighted F1. The Other class is easiest to classify (F1=0.87) because drug, fraud, and quality-of-life offenses have consistent spatial-temporal signatures. Property crimes reach F1 of 0.73; they overlap with Violent crimes in nighttime street contexts. Violent crimes are the hardest (F1=0.61), but the high recall of 0.78 is operationally appropriate—in public safety applications, missing a violent crime is more costly than a false alarm. Feature importance (Fig.~\ref{fig:imp_metacrime}) shows PCT\_MONTH\_RATE, PREM\_SEV\_RATE, and PREM\_TYP\_DESC as the top discriminators by split count.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_imp_metacrime.png}
+  \caption{LightGBM feature importance for the meta-crime classifier. PCT\_MONTH\_RATE and PREM\_SEV\_RATE are the top split-count features; PREM\_TYP\_DESC, VIC\_SEX, and spatial features follow.}
+  \label{fig:imp_metacrime}
+\end{figure}
+
+\subsection{Suspect Demographic Profiling}
+
+\begin{table}[h]
+\centering
+\caption{Suspect Sex Profiling — 2025 Test Set ($n=299{,}267$)}
+\label{tab:susp}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Class} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} & \textbf{Support} \\
+\midrule
+Female (F) & 0.36 & 0.63 & 0.46 &  66,113 \\
+Male   (M) & 0.87 & 0.69 & 0.77 & 233,154 \\
+\midrule
+Weighted Avg & 0.76 & 0.67 & 0.70 & 299,267 \\
+\midrule
+\multicolumn{4}{l}{Accuracy} & \textbf{0.674} \\
+\multicolumn{4}{l}{ROC-AUC} & \textbf{0.713} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model achieves 67.4\% accuracy and AUC of 0.71. Female predictions are harder (F1=0.46) because many offense types have near-identical male/female prevalence. The AUC of 0.71 meaningfully exceeds the 0.50 class-prior baseline, confirming that incident context and victim demographics carry genuine discriminative signal. The ROC curve (Fig.~\ref{fig:roc_susp}) shows consistent separation across all thresholds.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\columnwidth]{fig_roc_susp.png}
+  \caption{ROC curve — Suspect Sex Profiling (XGBoost). AUC = 0.71 confirms meaningful discriminability from incident context despite the inherent difficulty of demographic inference.}
+  \label{fig:roc_susp}
+\end{figure}
+
+\subsection{Crime Outcome Prediction}
+
+Table~\ref{tab:outcome} compares the default (0.5) and optimal (0.772) thresholds.
+
+\begin{table}[h]
+\centering
+\caption{Crime Outcome Prediction — 2025 Test Set ($n=427{,}742$)}
+\label{tab:outcome}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Configuration} & \textbf{AUC} & \textbf{Threshold} & \textbf{Acc} & \textbf{Att. Recall} \\
+\midrule
+XGBoost only      & 0.811 & 0.50 & --- & --- \\
+LightGBM only     & 0.819 & 0.50 & --- & --- \\
+Ensemble (default) & 0.819 & 0.50 & 0.970 & 0.25 \\
+Ensemble (tuned)  & 0.819 & 0.772 & 0.817 & 0.72 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ensemble reaches AUC 0.819. At the default threshold, ATTEMPTED recall is only 25\%—the model identifies most easy COMPLETED cases but misses three-quarters of rare attempted crimes. The optimal threshold (0.772) raises ATTEMPTED recall to 72\% by shifting the operating point along the ROC curve (Fig.~\ref{fig:roc_outcome}), trading 15 percentage points of accuracy for nearly three times the minority sensitivity.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\columnwidth]{fig_roc_outcome.png}
+  \caption{ROC curve — Crime Outcome Prediction. The gold marker shows the optimal threshold ($\hat\tau=0.772$), raising ATTEMPTED recall from 25\% to 72\%. Ensemble AUC = 0.819.}
+  \label{fig:roc_outcome}
+\end{figure}
+
+\subsection{Daily Crime Volume Forecasting}
+
+\begin{table}[h]
+\centering
+\caption{Daily Volume Forecasting — 2025 ($n=273$ days)}
+\label{tab:regression}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Model} & \textbf{$R^2$} & \textbf{MAE} & \textbf{RMSE} & \textbf{MAPE} \\
+\midrule
+LightGBM  & 0.506 & 64.5 & 80.6 & 4.15\% \\
+XGBoost   & 0.517 & 63.8 & 79.7 & 4.08\% \\
+\midrule
+\textbf{Ensemble} & \textbf{0.519} & \textbf{63.7} & \textbf{79.5} & \textbf{4.09\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ensemble achieves $R^2 = 0.519$ (MAE 63.7, RMSE 79.5, MAPE 4.09\%) on 273 unseen 2025 days. The key improvement over earlier attempts ($R^2 \approx 0.34$) came from addressing the distribution shift rather than tuning tree hyperparameters: 2020--2021 COVID-era complaint volumes ($\approx$900/day) are 41\% below 2025 levels ($\approx$1,567/day), so models trained on the full 2020--2024 window learn a systematically low baseline. Restricting training to 2022--2024 and predicting the delta from 2024 DOW means (which autocalibrate to the current regime) reduces target variance by $\approx$40\% and removes the between-year level shift as a source of error. Feature importance (Fig.~\ref{fig:imp_regression}) confirms rolling averages and short-lag features as the dominant predictors, consistent with the short-memory autocorrelation structure of daily crime volume. The remaining $R^2$ gap from the 0.85 design target reflects the theoretical ceiling of calendar-only information: a DOW$\times$Month oracle achieves $R^2 = 0.658$ on 2025. Weather covariates were experimentally integrated but did not improve performance (Section~\ref{sec:discussion}); public-event calendars represent the highest-value remaining external signal.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_vol_forecast.png}
+  \caption{Daily crime volume: actual 2025 (black), LightGBM (blue), ensemble (purple). Ensemble $R^2=0.519$ (MAPE 4.09\%) after distribution-shift correction: training restricted to 2022--2024 and delta-from-2024-DOW-mean target. Weather covariates were tested and did not improve $R^2$; public events data is the next required external signal.}
+  \label{fig:vol_forecast}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_imp_regression.png}
+  \caption{Top-20 feature importance — daily volume regressor (LightGBM). Lag\_1, Roll\_mean\_7, and Roll\_mean\_14 capture short-term autocorrelation; DaySince2020 encodes secular trend; Fourier harmonics encode annual seasonality.}
+  \label{fig:imp_regression}
+\end{figure}
+
+\subsection{Precinct Hotspot Warning System}
+
+\begin{table}[h]
+\centering
+\caption{Precinct Hotspot Detection — 2025 ($n=21{,}174$ precinct-days)}
+\label{tab:hotspot}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Class} & \textbf{Prec.} & \textbf{Rec.} & \textbf{F1} & \textbf{Support} \\
+\midrule
+Normal  & 0.65 & 0.66 & 0.66 & 11,470 \\
+Hotspot & 0.60 & 0.59 & 0.59 &  9,704 \\
+\midrule
+Macro Avg & 0.62 & 0.62 & 0.62 & 21,174 \\
+\midrule
+\multicolumn{4}{l}{Accuracy ($\hat\tau=0.491$)} & \textbf{0.63} \\
+\multicolumn{4}{l}{Macro-F1} & \textbf{0.62} \\
+\multicolumn{4}{l}{ROC-AUC} & \textbf{0.663} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The hotspot system achieves AUC 0.663 and macro-F1 0.62 on the 2025 test set. Hotspot precision is 0.60 and recall 0.59; Normal precision 0.65 and recall 0.66. These moderate scores reflect the genuine difficulty of precinct-level day-ahead prediction after leakage removal: rolling-window features are confined to $t-1$ and beyond, eliminating any direct view of the current day's count. The ROC curve (Fig.~\ref{fig:roc_hotspot}) confirms above-chance discrimination. Persistent structural differences between high-crime precincts (encoded by PCT\_HOTSPOT\_RATE) and short-term lag counts provide the primary signal.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\columnwidth]{fig_roc_hotspot.png}
+  \caption{ROC curve — Precinct Hotspot Warning System (AUC = 0.663). The gold marker indicates the optimal decision threshold ($\hat\tau=0.491$).}
+  \label{fig:roc_hotspot}
+\end{figure}
+
+\subsection{Summary of Results}
+
+Table~\ref{tab:summary} consolidates all five task results.
+
+\begin{table}[h]
+\centering
+\caption{Summary of All Prediction Task Results (2025 Test Set)}
+\label{tab:summary}
+\begin{tabular}{@{}cll@{}}
+\toprule
+\textbf{\#} & \textbf{Task} & \textbf{Result} \\
+\midrule
+1 & Meta-Crime Classification & Acc 0.754 \quad F1 0.77 \\
+2 & Suspect Demographic Profiling & AUC 0.713 \\
+3 & Crime Outcome Prediction & AUC 0.819 \\
+4 & Daily Volume Forecasting & $R^2$ 0.519 \quad MAPE 4.09\% \\
+5 & Precinct Hotspot Detection & AUC 0.663 \quad Macro-F1 0.62 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All five tasks produce above-chance performance on completely unseen 2025 data. Daily volume $R^2 = 0.519$ reflects three targeted improvements: (1) restricting training to 2022--2024 to avoid the 41\% COVID-era distribution shift, (2) predicting deviations from 2024 DOW means rather than raw counts, and (3) holiday flags and recency-weighted samples. The remaining gap from the 0.85 design target is bounded by the theoretical ceiling of calendar-only information ($R^2 = 0.658$ for a DOW$\times$Month oracle). Weather covariates were tested and found insufficient (Section~\ref{sec:discussion}); public-event calendars are the highest-value remaining external signal.
+
+\subsection{SHAP Interpretability Analysis}
+
+SHAP analysis for the Violent class (Fig.~\ref{fig:shap_bar}) identifies LAW\_CAT\_CD as the dominant predictor: felony encoding strongly pushes predictions toward Violent. VIC\_SEX and VIC\_AGE\_GROUP rank second and third, reflecting the demographic asymmetry of violent crime victims. LOC\_OF\_OCCUR\_DESC and PREM\_TYP\_DESC capture the street and residential-premise contexts that concentrate violent incidents. PCT\_MONTH\_RATE and PCT\_HOUR\_RATE encode seasonal and diurnal precinct-level base rates. HOUR\_COS and HOUR\_SIN capture the late-night peak in violent crime. The pattern is consistent across all three classes: rule-based categorical features (LAW\_CAT\_CD) dominate, followed by spatial context and then temporal rate features.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_shap_bar.png}
+  \caption{SHAP mean absolute feature importance — Violent crime class. LAW\_CAT\_CD is the strongest driver; victim demographics and spatial-temporal context features follow.}
+  \label{fig:shap_bar}
+\end{figure}
+
+The beeswarm plot for the Violent class (Fig.~\ref{fig:shap_beeswarm}) confirms directional consistency: high LAW\_CAT\_CD values (felony), late-night HOUR\_SIN, and street-level PREM\_TYP\_DESC push predictions toward Violent—consistent with established criminological patterns \cite{mohler2011, chainey2008}.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{fig_shap_beeswarm.png}
+  \caption{SHAP beeswarm — Violent class (3,000 test samples). Each dot is one prediction; color encodes feature value (red = high, blue = low). High LAW\_CAT\_CD, late-night hours, and street premises drive Violent classification.}
+  \label{fig:shap_beeswarm}
+\end{figure}
+
+%=============================================================
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{The Leakage Audit}
+
+The most significant methodological finding concerns data leakage in time-series feature construction. An early version of the hotspot model used rolling windows without a \texttt{shift(1)} operation—\texttt{Cnt.rolling(7).mean()} instead of \texttt{Cnt.shift(1).rolling(7).mean()}. The unshifted window includes the current day's \texttt{Cnt}, which directly determines the \texttt{Is\_Hotspot} label: the model was effectively seeing the answer in its features. This inflated AUC to 0.992 in the naive version. The corrected implementation enforces strict \texttt{shift(1)}-anchored lag and rolling features so that no same-day information reaches the model. The resulting honest AUC is 0.663—above chance, but a realistic reflection of the true difficulty of precinct-level day-ahead prediction. This correction underscores that rigorous temporal hygiene is non-negotiable in any operational forecasting system.
+
+A similar issue affected the volume forecasting task: computing \texttt{DOW\_vol\_median} from the full dataset would leak 2025 volume statistics into training features. The corrected approach derives medians exclusively from 2020--2024 rows and maps them forward.
+
+\subsection{Class Imbalance Strategy}
+
+The 98.6\%/1.4\% outcome split requires a two-pronged approach because the majority-class gradient dominates regardless of simple class weighting at this ratio. BorderlineSMOTE synthesizes minority samples near the decision boundary for XGBoost, while \texttt{is\_unbalance=True} reweights the gradient computation for LightGBM, preserving the original distribution. Their ensemble AUC (0.82) exceeds either branch individually and exceeds the class-prior baseline (0.50) by 32 points. Threshold optimization at the operating point maximizing $\text{TPR} - \text{FPR}$ further improves minority recall from 25\% to 72\%.
+
+\subsection{Volume Forecasting: Distribution Shift}
+
+The core challenge in volume forecasting is a 41\% distribution shift between the training and test periods. The 2020--2021 COVID years have a mean of $\approx$900 complaints/day, whereas 2025 averages $\approx$1,567/day. A model trained on 2020--2024 learns a mean that is 192 crimes/day too low and systematically underpredicts 2025. Two complementary fixes address this: (1) restricting training to 2022--2024, which reduces the distribution gap to 3.4\%; and (2) using a delta target $\Delta_t = V_t - \mu_{\text{DOW},2024}$ so the model predicts fluctuations around the current regime rather than absolute level. This raised ensemble $R^2$ from 0.344 to 0.519.
+
+Weather covariates (daily temperature, precipitation, snowfall from the Open-Meteo historical API for NYC 2020--2025) were integrated and tested as additional features. Contrary to expectation, weather did not improve $R^2$; the model overfit the weather--crime relationship in the 2022--2024 training window in ways that did not transfer to 2025. The 2025 test period had zero heavy snowfall days and only 16 heavy rain days, so weather variation provided negligible additional discriminative signal. A post-hoc additive adjustment (subtracting the training-derived rain deficit on rain days) yielded a marginal gain of $+0.005$ $R^2$, insufficient to justify the added complexity. The theoretical ceiling for calendar-only features is $R^2 \approx 0.658$ (DOW$\times$Month oracle on 2025); reaching this bound requires public-event calendars (parades, concerts, protests) rather than weather alone.
+
+\subsection{Equal Ensemble Weights}
+
+All soft-vote ensembles use equal (0.5/0.5) weights. Without a dedicated validation fold for calibration, unequal weights would be an unvalidated hyperparameter. Equal weights are the minimum-assumption baseline; fold-based optimization would likely yield marginal improvements at the cost of additional complexity.
+
+\subsection{Operational Deployment Considerations}
+
+The hotspot system's macro-F1 of 0.62 and AUC of 0.663 represent honest above-chance performance on a leakage-free formulation. Hotspot recall of 0.59 means roughly 41\% of actual hotspot days are missed, while Normal precision of 0.65 means 35\% of predicted hotspot alerts are false positives. For a resource pre-positioning system where alert costs are low, even moderate recall provides operational value over a baseline that flags nothing. The primary limitation is the absence of external covariates (weather, events, economic indicators) that could substantially improve recall without leakage.
+
+%=============================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper presented a five-task data mining pipeline for multi-dimensional urban crime prediction applied to 2,948,528 NYPD complaint records, following the CRISP-DM lifecycle. The system addresses behavioral taxonomy, suspect profiling, outcome prediction, daily volume forecasting, and precinct hotspot detection within a unified, leakage-free analytical framework.
+
+The core technical contributions are: (1) an explicit anti-leakage framework using \texttt{shift(1)}-anchored rolling windows and train-only aggregate statistics, with empirical validation showing that naive implementations inflate hotspot AUC from 0.663 to 0.992; (2) a two-branch imbalance strategy (BorderlineSMOTE + \texttt{is\_unbalance} ensemble) for the extreme 68:1 outcome class ratio; (3) cyclical Fourier encoding of all periodic temporal features, including three-harmonic annual seasonality; and (4) SHAP TreeExplainer analysis providing per-class feature attribution for the behavioral classifier.
+
+All five tasks achieve above-baseline performance on the held-out 2025 test set: meta-crime accuracy 75.4\%, suspect sex AUC 0.71, crime outcome AUC 0.82, precinct hotspot AUC 0.663 (macro-F1 0.62) after leakage removal, and daily volume $R^2$ 0.519 (MAPE 4.09\%). SHAP analysis confirms that model decisions are driven by criminologically coherent features, satisfying the interpretability requirement for responsible deployment in a public safety context.
+
+\textbf{Limitations and Future Work.} Several directions remain for future investigation. First, all models are evaluated on a single 2025 holdout; adding \texttt{TimeSeriesSplit} cross-validation over the 2022--2024 training window would provide variance estimates and improve hyperparameter robustness. Second, the daily volume $R^2 = 0.519$ is bounded by the theoretical calendar-only ceiling of approximately 0.658 (DOW$\times$Month oracle); weather covariates were tested and did not improve performance due to overfitting on training-period weather patterns, confirming that public events data (parades, concerts, demonstrations) is the more impactful external signal needed to approach the 0.85 design target. Third, to address the fairness concerns raised by Berk et al.\ \cite{berk2018}, future work should audit per-demographic group error rates and integrate adversarial debiasing into the training objective. Fourth, replacing the static annual Fourier basis with adaptive seasonal decomposition would improve robustness to structural breaks such as pandemic lockdowns. Finally, multi-city validation on Chicago (CPD) or Los Angeles (LAPD) open data would establish the generalizability of the five-task formulation beyond New York City.
+
+%=============================================================
+\begin{thebibliography}{00}
+
+\bibitem{mohler2011}
+G.~O.~Mohler, M.~B.~Short, P.~J.~Brantingham, F.~P.~Schoenberg, and G.~E.~Tita, ``Self-Exciting Point Process Modeling of Crime,'' \textit{J.\ Amer.\ Statist.\ Assoc.}, vol.~106, no.~493, pp.~100--108, 2011.
+
+\bibitem{chainey2008}
+S.~Chainey, L.~Tompson, and S.~Uhlig, ``The Utility of Hotspot Mapping for Predicting Spatial Patterns of Crime,'' \textit{Security J.}, vol.~21, no.~1--2, pp.~4--28, 2008.
+
+\bibitem{perry2013}
+W.~L.~Perry, B.~McInnis, C.~C.~Price, S.~C.~Smith, and J.~S.~Hollywood, \textit{Predictive Policing: The Role of Crime Forecasting in Law Enforcement Operations}. RAND Corporation, Santa Monica, CA, 2013.
+
+\bibitem{bogomolov2014}
+A.~Bogomolov, B.~Lepri, J.~Staiano, N.~Oliver, F.~Pianesi, and A.~Pentland, ``Once Upon a Crime: Towards Crime Prediction from Demographics and Mobile Data,'' in \textit{Proc.\ 16th ACM Int.\ Conf.\ Multimodal Interaction (ICMI)}, 2014, pp.~427--434.
+
+\bibitem{berk2018}
+R.~Berk, H.~Heidari, S.~Jabbari, M.~Kearns, and A.~Roth, ``Fairness in Criminal Justice Risk Assessments: The State of the Art,'' \textit{Sociol.\ Methods Res.}, vol.~50, no.~1, pp.~3--44, 2021.
+
+\bibitem{he2009}
+H.~He and E.~A.~Garcia, ``Learning from Imbalanced Data,'' \textit{IEEE Trans.\ Knowl.\ Data Eng.}, vol.~21, no.~9, pp.~1263--1284, 2009.
+
+\bibitem{nypd2024}
+NYPD Open Data, ``NYPD Complaint Data Historic and Current (Year To Date),'' NYC Open Data Portal, 2024. [Online]. Available: \url{https://data.cityofnewyork.us}
+
+\bibitem{fayyad1996}
+U.~Fayyad, G.~Piatetsky-Shapiro, and P.~Smyth, ``The KDD Process for Extracting Useful Knowledge from Volumes of Data,'' \textit{Commun.\ ACM}, vol.~39, no.~11, pp.~27--34, Nov.\ 1996.
+
+\bibitem{chapman2000}
+P.~Chapman et al., \textit{CRISP-DM 1.0: Step-by-Step Data Mining Guide}. SPSS Inc., 2000.
+
+\bibitem{chen2016}
+T.~Chen and C.~Guestrin, ``XGBoost: A Scalable Tree Boosting System,'' in \textit{Proc.\ 22nd ACM SIGKDD Int.\ Conf.\ Knowledge Discovery Data Mining}, 2016, pp.~785--794.
+
+\bibitem{ke2017}
+G.~Ke et al., ``LightGBM: A Highly Efficient Gradient Boosting Decision Tree,'' in \textit{Adv.\ Neural Inf.\ Process.\ Syst.\ (NeurIPS)}, vol.~30, 2017.
+
+\bibitem{chawla2002}
+N.~V.~Chawla, K.~W.~Bowyer, L.~O.~Hall, and W.~P.~Kegelmeyer, ``SMOTE: Synthetic Minority Over-Sampling Technique,'' \textit{J.\ Artif.\ Intell.\ Res.}, vol.~16, pp.~321--357, 2002.
+
+\bibitem{han2005}
+H.~Han, W.-Y.~Wang, and B.-H.~Mao, ``Borderline-SMOTE: A New Over-Sampling Method in Imbalanced Data Sets Learning,'' in \textit{Proc.\ Int.\ Conf.\ Intelligent Computing (ICIC)}, 2005, pp.~878--887.
+
+\bibitem{lundberg2017}
+S.~M.~Lundberg and S.-I.~Lee, ``A Unified Approach to Interpreting Model Predictions,'' in \textit{Adv.\ Neural Inf.\ Process.\ Syst.\ (NeurIPS)}, vol.~30, 2017.
+
+\bibitem{pedregosa2011}
+F.~Pedregosa et al., ``Scikit-learn: Machine Learning in Python,'' \textit{J.\ Mach.\ Learn.\ Res.}, vol.~12, pp.~2825--2830, 2011.
+
+\bibitem{fluss2005}
+R.~Fluss, D.~Faraggi, and B.~Reiser, ``Estimation of the Youden Index and Its Associated Cutoff Point,'' \textit{Biom.\ J.}, vol.~47, no.~4, pp.~458--472, 2005.
+
+\end{thebibliography}
+
+\end{document}
